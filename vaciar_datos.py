@@ -1,465 +1,129 @@
-# 📦 Importamos las bibliotecas necesarias
 import streamlit as st
 import pandas as pd
-import re
-from PyPDF2 import PdfReader
+import io
+import chardet
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
-import tempfile
+from copy import copy
 
-# 🎨 Configuración inicial
-st.set_page_config(page_title="VALIDACIÓN DE CARTAS VEAB💲", layout="wide")
-st.title("💲VALIDACIÓN DE CARTAS VEAB PDF vs EXCEL")
+# 🧱 Configuración de la app
+st.set_page_config(page_title="Vaciado de datos", layout="wide")
+st.title("✨ Vaciado de datos en un archivo")
 
-# 🗂️ Pestañas principales
-tab_acciones_es, tab_acciones_en, tab_bono_es, tab_bono_en = st.tabs([
-    "🇪🇸 Acciones", "🇺🇸 Virtual Shares", "🇪🇸 Bono Diferido", "🇺🇸 Deferred Bonus"
-])
-
-# ─────────────────────────────────────────────────────────────
-# 🇪🇸 Comparador de Acciones Español
-with tab_acciones_es:
-    st.header("📂 Comparador de Acciones")
-
-    def limpiar_es(valor):
-        return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
-
-    def comparar_valores_es(pdf_valor, csv_valor):
-        pdf_valor = limpiar_es(pdf_valor)
-        csv_valor = limpiar_es(csv_valor)
-        try:
-            pdf_float = round(float(pdf_valor), 2)
-            csv_float = round(float(csv_valor), 2)
-            return abs(pdf_float - csv_float) < 0.01
-        except ValueError:
-            return pdf_valor == csv_valor
-
-    def extraer_datos_acciones_es(texto):
-        acciones = re.search(r'asignado.*?([\d,]+)', texto, re.IGNORECASE)
-        factor = re.search(r'reportas.*?:\s*([\d]+)', texto, re.IGNORECASE)
-        porcentaje = re.search(r'corresponden.*?:\s*([\d]+)', texto, re.IGNORECASE)
-        salario = re.search(r'2024.*?:\s*([\d,]+(?:\.\d{2})?)', texto, re.IGNORECASE)
-        equivalente = re.search(r'equivalente a\s*([\d,]+(?:\.\d{2})?)', texto, re.IGNORECASE)
-        if acciones and factor and porcentaje and salario and equivalente:
-            return (
-                limpiar_es(acciones.group(1)),
-                limpiar_es(factor.group(1)),
-                limpiar_es(porcentaje.group(1)),
-                "{:.2f}".format(float(limpiar_es(salario.group(1)))),
-                "{:.2f}".format(float(limpiar_es(equivalente.group(1))))
-            )
+# 📂 Función para cargar archivo base
+def cargar_base(uploaded_file):
+    ext = uploaded_file.name.split(".")[-1].lower()
+    try:
+        if ext == "csv":
+            return pd.read_csv(uploaded_file, skiprows=7)
+        elif ext == "xlsx":
+            return pd.read_excel(uploaded_file, skiprows=7)
+    except Exception as e:
+        st.error(f"❌ Error al cargar base: {e}")
         return None
 
-    def extraer_nombre_acciones_es(texto):
-        lineas = texto.splitlines()
-        for i, linea in enumerate(lineas):
-            if re.search(r'^Junio\s+\d{4}$', linea.strip(), re.IGNORECASE):
-                for j in range(i + 1, len(lineas)):
-                    siguiente = lineas[j].strip()
-                    if siguiente:
-                        return siguiente
+# 📂 Función para cargar archivo fuente con codificación flexible
+def cargar_fuente(uploaded_file):
+    ext = uploaded_file.name.split(".")[-1].lower()
+    try:
+        if ext == "csv":
+            try:
+                return pd.read_csv(uploaded_file)
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                raw_data = uploaded_file.read()
+                encoding_detected = chardet.detect(raw_data)['encoding']
+                uploaded_file.seek(0)
+                return pd.read_csv(uploaded_file, encoding=encoding_detected)
+        elif ext == "xlsx":
+            return pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"❌ Error al cargar fuente: {e}")
         return None
 
-    def procesar_acciones_es(df, pdf_files, columnas):
-        df[columnas[1:]] = df[columnas[1:]].applymap(limpiar_es)
-        df[columnas[0]] = df[columnas[0]].astype(str).str.upper().str.strip()
-        errores_por_fila = {}
-        comentarios = {}
-        iconos_df = df.copy()
-        iconos_df["Origen PDF"] = ""
-        notas = []
-        procesados = []
+# 📤 Subida de archivos
+archivo_base = st.file_uploader("📂 Archivo donde se cargará la información (que la eqtiqueta siempre este pública)", type=["csv", "xlsx"])
+archivo_fuente = st.file_uploader("📥 Archivo que contiene los datos (que la eqtiqueta siempre este pública)", type=["csv", "xlsx"])
 
-        for file in pdf_files:
-            reader = PdfReader(file)
-            texto = ''.join(page.extract_text() for page in reader.pages if page.extract_text())
-            if not texto.strip():
-                continue
-            nombre_pdf = extraer_nombre_acciones_es(texto)
-            if not nombre_pdf:
-                continue
-            nombre_pdf = nombre_pdf.upper().strip()
-            if nombre_pdf not in df[columnas[0]].values:
-                continue
-            idx = df[df[columnas[0]] == nombre_pdf].index[0]
-            fila = df.loc[idx]
-            datos = extraer_datos_acciones_es(texto)
-            if not datos:
-                continue
-            errores = []
-            for campo, extraido, esperado in zip(columnas[1:], datos, [str(fila[col]) for col in columnas[1:]]):
-                if not comparar_valores_es(extraido, esperado):
-                    errores.append(campo)
-                    comentarios[(idx, campo)] = f"{campo}: En el EXCEL: {esperado}// En el PDF: {extraido}"
-                    iconos_df.at[idx, campo] = f"❌ {fila[campo]}"
-                else:
-                    iconos_df.at[idx, campo] = f"✅ {fila[campo]}"
-            if errores:
-                errores_por_fila[idx] = errores
-            iconos_df.at[idx, "Origen PDF"] = file.name
-            procesados.append(idx)
+if archivo_base and archivo_fuente:
+    base_df = cargar_base(archivo_base)
+    fuente_df = cargar_fuente(archivo_fuente)
 
-        for idx in iconos_df.index:
-            fila_notas = [comentarios[(idx, col)] for col in iconos_df.columns if (idx, col) in comentarios]
-            notas.append(" | ".join(fila_notas))
-        iconos_df["Notas"] = notas
-
-        def resaltar(row):
-            idx = row.name
-            return ['background-color: #FFCCCC' if col in errores_por_fila.get(idx, []) else ''
-                    for col in iconos_df.columns]
-
-        iconos_filtrados = iconos_df.loc[procesados] if procesados else pd.DataFrame()
-        st.subheader("📊 Resultados comparados")
-        if not iconos_filtrados.empty:
-            st.dataframe(iconos_filtrados.style.apply(resaltar, axis=1), use_container_width=True)
+    if base_df is not None and fuente_df is not None:
+        if "C98_INDICADOR_DE_FINIQUITO" not in fuente_df.columns:
+            st.error("❌ El archivo fuente debe tener la columna 'C98_INDICADOR_DE_FINIQUITO'")
         else:
-            st.warning("⚠️ No se encontraron coincidencias válidas entre los PDFs y los nombres del CSV.")
+            filtrado = fuente_df[fuente_df["C98_INDICADOR_DE_FINIQUITO"] == 0]
 
-    columnas_acciones_es = ['Nombre', 'Acciones', 'Factor financiero', 'Target', 'Salario Diario', 'Acciones MXN']
-    csv_file_es = st.file_uploader("📂 Sube tu archivo CSV", type=["csv"], key="csv_acciones_es")
-    pdf_files_es = st.file_uploader("📥 Sube tus archivos PDF", type=["pdf"], accept_multiple_files=True, key="pdf_acciones_es")
-    if csv_file_es and pdf_files_es:
-        df_es = pd.read_csv(csv_file_es)
-        if all(col in df_es.columns for col in columnas_acciones_es):
-            procesar_acciones_es(df_es, pdf_files_es, columnas_acciones_es)
-        else:
-            st.error(f"⚠️ El CSV debe tener las columnas: {columnas_acciones_es}")
+           # 🧠 Mostrar solo columnas que están en base, en el mismo orden del archivo base ✅ (AJUSTE FINAL)
+            columnas_base = base_df.columns.tolist()
+            columnas_comunes_mostrar = [col for col in columnas_base if col in filtrado.columns]
 
-# ─────────────────────────────────────────────────────────────
-# 🇺🇸 Comparador de Acciones Inglés
-with tab_acciones_en:
-    st.header("📂 Virtual Shares")
+            # 🧾 Previsualización con orden exacto de columnas del archivo base
+            st.subheader("✅ Registros filtrados con columnas en el orden del archivo base")
+            preview_df = filtrado[columnas_comunes_mostrar].copy()
+            st.dataframe(preview_df)
 
-    def limpiar_en(valor):
-        return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
 
-    def comparar_valores_en(pdf_valor, csv_valor):
-        pdf_valor = limpiar_en(pdf_valor)
-        csv_valor = limpiar_en(csv_valor)
-        try:
-            pdf_float = round(float(pdf_valor), 2)
-            csv_float = round(float(csv_valor), 2)
-            return abs(pdf_float - csv_float) < 0.01
-        except ValueError:
-            return pdf_valor == csv_valor
+            if st.button("📄 Generar archivo Excel con los datos obtenidos"):
+                buffer_excel = io.BytesIO()
+                base_df.to_excel(buffer_excel, index=False, sheet_name="Datos")
+                buffer_excel.seek(0)
 
-    def extraer_datos_acciones_en(texto):
-        acciones = re.search(r'assigned\s+([\d,\.]+)', texto, re.IGNORECASE)
-        factor = re.search(r'financial factor.*?(\d+)', texto, re.IGNORECASE)
-        porcentaje = re.search(r'target bonus.*?(\d+(?:\.\d+)?)', texto, re.IGNORECASE)
-        salario = re.search(r'December \d{4}.*?([\d,]+\.\d{2})', texto, re.IGNORECASE)
-        equivalente = re.search(r'equivalent to\s+([\d,\.]+)', texto, re.IGNORECASE)
-        if acciones and factor and porcentaje and salario and equivalente:
-            return (
-                limpiar_en(acciones.group(1)),
-                limpiar_en(factor.group(1)),
-                limpiar_en(porcentaje.group(1)),
-                "{:.2f}".format(float(limpiar_en(salario.group(1)))),
-                "{:.2f}".format(float(limpiar_en(equivalente.group(1))))
-            )
-        return None
+                wb = load_workbook(buffer_excel)
+                ws = wb.active
 
-    def extraer_nombre_acciones_en(texto):
-        lineas = texto.splitlines()
-        for i, linea in enumerate(lineas):
-            normalizada = re.sub(r'\s+', '', linea.strip())
-            if re.search(r'^May,\d{4}$', normalizada, re.IGNORECASE):
-                for j in range(i + 1, len(lineas)):
-                    siguiente = lineas[j].strip()
-                    if siguiente:
-                        return siguiente
-        return None
+                # 🎨 Copiar estilo del encabezado original
+                estilo_encabezado = {}
+                for col in range(1, ws.max_column + 1):
+                    celda_original = ws.cell(row=1, column=col)
+                    estilo_encabezado[col] = {
+                        'font': copy(celda_original.font),
+                        'fill': copy(celda_original.fill),
+                        'alignment': copy(celda_original.alignment),
+                        'border': copy(celda_original.border),
+                        'number_format': celda_original.number_format
+                    }
 
-    def procesar_acciones_en(df, pdf_files, columnas):
-        df[columnas[1:]] = df[columnas[1:]].applymap(limpiar_en)
-        df[columnas[0]] = df[columnas[0]].astype(str).str.upper().str.strip()
-        errores_por_fila = {}
-        comentarios = {}
-        iconos_df = df.copy()
-        iconos_df["PDF SOURCE"] = ""
-        notas = []
-        procesados = []
+                # 🧼 Limpiar y reescribir encabezados en fila 8
+                ws.delete_rows(1, ws.max_row)
+                for c_idx, col_name in enumerate(base_df.columns, start=1):
+                    celda = ws.cell(row=8, column=c_idx, value=col_name)
+                    estilo = estilo_encabezado.get(c_idx)
+                    if estilo:
+                        celda.font = estilo['font']
+                        celda.fill = estilo['fill']
+                        celda.alignment = estilo['alignment']
+                        celda.border = estilo['border']
+                        celda.number_format = estilo['number_format']
 
-        for file in pdf_files:
-            reader = PdfReader(file)
-            texto = ''.join(page.extract_text() for page in reader.pages if page.extract_text())
-            if not texto.strip():
-                continue
-            nombre_pdf = extraer_nombre_acciones_en(texto)
-            if not nombre_pdf:
-                continue
-            nombre_pdf = nombre_pdf.upper().strip()
-            if nombre_pdf not in df[columnas[0]].values:
-                continue
-            idx = df[df[columnas[0]] == nombre_pdf].index[0]
-            fila = df.loc[idx]
-            datos = extraer_datos_acciones_en(texto)
-            if not datos:
-                continue
-            errores = []
-            for campo, extraido, esperado in zip(columnas[1:], datos, [str(fila[col]) for col in columnas[1:]]):
-                if not comparar_valores_en(extraido, esperado):
-                    errores.append(campo)
-                    comentarios[(idx, campo)] = f"{campo}: In CSV: {esperado}// In PDF: {extraido}"
-                    iconos_df.at[idx, campo] = f"❌ {fila[campo]}"
-                else:
-                    iconos_df.at[idx, campo] = f"✅ {fila[campo]}"
-            if errores:
-                errores_por_fila[idx] = errores
-            iconos_df.at[idx, "PDF SOURCE"] = file.name
-            procesados.append(idx)
+                # 🔍 Detectar encabezados reales en Excel (fila 8)
+                encabezados_excel = [ws.cell(row=8, column=c).value for c in range(1, ws.max_column + 1)]
 
-        for idx in iconos_df.index:
-            fila_notas = [comentarios[(idx, col)] for col in iconos_df.columns if (idx, col) in comentarios]
-            notas.append(" | ".join(fila_notas))
-        iconos_df["NOTES"] = notas
+                # ✅ Filtrar solo columnas presentes en ambos (este bloque mantiene tu lógica actual)
+                columnas_comunes_reales = [col for col in filtrado.columns if col in encabezados_excel]
 
-        def resaltar(row):
-            idx = row.name
-            return ['background-color: #FFCCCC' if col in errores_por_fila.get(idx, []) else ''
-                    for col in iconos_df.columns]
+                # 🧠 Insertar datos alineados por nombre exacto
+                for r_idx, row in enumerate(filtrado[columnas_comunes_reales].itertuples(index=False, name=None), start=9):
+                    for col_name in columnas_comunes_reales:
+                        for c_idx in range(1, ws.max_column + 1):
+                            if ws.cell(row=8, column=c_idx).value == col_name:
+                                ws.cell(row=r_idx, column=c_idx).value = row[columnas_comunes_reales.index(col_name)]
+                                break
 
-        iconos_filtrados = iconos_df.loc[procesados] if procesados else pd.DataFrame()
-        st.subheader("📊 Comparison Results")
-        if not iconos_filtrados.empty:
-            st.dataframe(iconos_filtrados.style.apply(resaltar, axis=1), use_container_width=True)
-        else:
-            st.warning("⚠️ No valid matches found between PDFs and CSV names.")
+                # ✅ Mostrar columnas válidas como tabla
+                st.success("✅ Columnas válidas para insertar (presentes en ambos archivos):")
+                st.table(pd.DataFrame(columnas_comunes_reales, columns=["Columnas Coincidentes"]))
 
-    columnas_acciones_en = ['NAME', 'VIRTUAL SHARES', 'FINANCIAL FACTOR', 'TARGET BONUS', 'ANNUAL SALARY', 'VIRTUAL SHARES MXN']
-    csv_file_en = st.file_uploader("📂 Upload your CSV file", type=["csv"], key="csv_acciones_en")
-    pdf_files_en = st.file_uploader("📥 Upload your PDF files", type=["pdf"], accept_multiple_files=True, key="pdf_acciones_en")
-    if csv_file_en and pdf_files_en:
-        df_en = pd.read_csv(csv_file_en)
-        if all(col in df_en.columns for col in columnas_acciones_en):
-            procesar_acciones_en(df_en, pdf_files_en, columnas_acciones_en)
-        else:
-            st.error(f"⚠️ Your CSV must contain the following columns: {columnas_acciones_en}")
+                # 📥 Descargar archivo final
+                output = io.BytesIO()
+                wb.save(output)
+                output.seek(0)
 
-# ─────────────────────────────────────────────────────────────
-# 🇪🇸 Comparador Bono Diferido Español
-with tab_bono_es:
-    st.header("📂 Comparador Bono Diferido")
-
-    def limpiar_bono_es(valor):
-        return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
-
-    def comparar_valores_bono_es(pdf_valor, csv_valor):
-        pdf_valor = limpiar_bono_es(pdf_valor)
-        csv_valor = limpiar_bono_es(csv_valor)
-        try:
-            return round(float(pdf_valor), 2) == round(float(csv_valor), 2)
-        except ValueError:
-            return pdf_valor == csv_valor
-
-    def extraer_datos_bono_es(texto):
-        bono = re.search(r'asignado.*?([\d,.]+)', texto, re.IGNORECASE)
-        factor = re.search(r'reportas.*?:\s*([\d]+)', texto, re.IGNORECASE)
-        porcentaje = re.search(r'corresponden.*?:\s*([\d]+)', texto, re.IGNORECASE)
-        salario = re.search(r'2024.*?:\s*([\d,]+(?:\.\d{2})?)', texto, re.IGNORECASE)
-        if bono and factor and porcentaje and salario:
-            return limpiar_bono_es(bono.group(1)), limpiar_bono_es(factor.group(1)), limpiar_bono_es(porcentaje.group(1)), "{:.2f}".format(float(limpiar_bono_es(salario.group(1))))
-        return None
-
-    def extraer_nombre_bono_es(texto):
-        lineas = texto.splitlines()
-        for i, linea in enumerate(lineas):
-            if re.search(r'^Mayo\s+\d{4}$', linea.strip(), re.IGNORECASE):
-                for j in range(i + 1, len(lineas)):
-                    siguiente = lineas[j].strip()
-                    if siguiente:
-                        return siguiente
-        return None
-
-    def comparar_bono_es(csv_file, pdf_files, columnas):
-        df = pd.read_csv(csv_file)
-        if not all(col in df.columns for col in columnas):
-            st.error(f"⚠️ El CSV debe tener las columnas: {columnas}")
-            return
-
-        df[columnas[1:]] = df[columnas[1:]].applymap(limpiar_bono_es)
-        df[columnas[0]] = df[columnas[0]].astype(str).str.upper().str.strip()
-
-        errores_por_fila = {}
-        comentarios = {}
-        iconos_df = df.copy()
-        iconos_df["ORIGEN PDF"] = ""
-        notas = []
-        procesados = []
-
-        for file in pdf_files:
-            reader = PdfReader(file)
-            texto = ''.join(page.extract_text() for page in reader.pages if page.extract_text())
-            if not texto.strip():
-                continue
-
-            nombre_pdf = extraer_nombre_bono_es(texto)
-            if not nombre_pdf:
-                continue
-
-            nombre_pdf = nombre_pdf.upper().strip()
-            if nombre_pdf not in df[columnas[0]].values:
-                continue
-
-            idx = df[df[columnas[0]] == nombre_pdf].index[0]
-            fila = df.loc[idx]
-            datos = extraer_datos_bono_es(texto)
-            if not datos:
-                continue
-
-            errores = []
-            for campo, extraido, esperado in zip(columnas[1:], datos, [fila[col] for col in columnas[1:]]):
-                if not comparar_valores_bono_es(extraido, esperado):
-                    errores.append(campo)
-                    comentarios[(idx, campo)] = f"{campo}: En el EXCEL: {esperado}// En el PDF: {extraido}"
-                    iconos_df.at[idx, campo] = f"❌ {fila[campo]}"
-                else:
-                    iconos_df.at[idx, campo] = f"✅ {fila[campo]}"
-
-            if errores:
-                errores_por_fila[idx] = errores
-            else:
-                for campo in columnas[1:]:
-                    iconos_df.at[idx, campo] = f"✅ {fila[campo]}"
-
-            iconos_df.at[idx, "ORIGEN PDF"] = file.name
-            procesados.append(idx)
-
-        for idx in iconos_df.index:
-            fila_notas = [comentarios[(idx, col)] for col in iconos_df.columns if (idx, col) in comentarios]
-            notas.append(" | ".join(fila_notas))
-        iconos_df["NOTAS"] = notas
-
-        def resaltar(row):
-            idx = row.name
-            return ['background-color: #FFCCCC' if col in errores_por_fila.get(idx, []) else ''
-                    for col in iconos_df.columns]
-
-        iconos_filtrados = iconos_df.loc[procesados] if procesados else pd.DataFrame()
-        st.subheader("📊 Resultados comparados")
-
-        if not iconos_filtrados.empty:
-            st.dataframe(iconos_filtrados.style.apply(resaltar, axis=1), use_container_width=True)
-        else:
-            st.warning("⚠️ No se encontraron coincidencias válidas entre los PDFs y los nombres del CSV.")
-
-    columnas_bono_es = ['NOMBRE', 'BONO DIFERIDO', 'FACTOR FINANCIERO', 'DIAS BONO', 'SALARIO DIARIO']
-    csv_file_bono_es = st.file_uploader("📂 Sube tu archivo CSV", type=["csv"], key="csv_bono_es")
-    pdf_files_bono_es = st.file_uploader("📥 Sube tus PDFs", type=["pdf"], accept_multiple_files=True, key="pdf_bono_es")
-    if csv_file_bono_es and pdf_files_bono_es:
-        comparar_bono_es(csv_file_bono_es, pdf_files_bono_es, columnas_bono_es)
-
-# ─────────────────────────────────────────────────────────────
-# 🇺🇸 Comparador Bono Diferido Inglés
-with tab_bono_en:
-    st.header("📂 Deferred Bonus Comparator")
-
-    def limpiar_bono_en(valor):
-        return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
-
-    def comparar_valores_bono_en(pdf_valor, csv_valor):
-        pdf_valor = limpiar_bono_en(pdf_valor)
-        csv_valor = limpiar_bono_en(csv_valor)
-        try:
-            return round(float(pdf_valor), 2) == round(float(csv_valor), 2)
-        except ValueError:
-            return pdf_valor == csv_valor
-
-    def extraer_datos_bono_en(texto):
-        bono = re.search(r'assigned\s+([\d,\.]+)', texto, re.IGNORECASE)
-        factor = re.search(r'financial factor.*?(\d+)', texto, re.IGNORECASE)
-        porcentaje = re.search(r'target bonus.*?(\d+(?:\.\d+)?)', texto, re.IGNORECASE)
-        salario = re.search(r'December \d{4}.*?([\d,]+\.\d{2})', texto, re.IGNORECASE)
-        if bono and factor and porcentaje and salario:
-            return limpiar_bono_en(bono.group(1)), limpiar_bono_en(factor.group(1)), limpiar_bono_en(porcentaje.group(1)), "{:.2f}".format(float(limpiar_bono_en(salario.group(1))))
-        return None
-
-    def extraer_nombre_bono_en(texto):
-        lineas = texto.splitlines()
-        for i, linea in enumerate(lineas):
-            normalizada = re.sub(r'\s+', '', linea.strip())
-            if re.search(r'^May,\d{4}$', normalizada, re.IGNORECASE):
-                for j in range(i + 1, len(lineas)):
-                    siguiente = lineas[j].strip()
-                    if siguiente:
-                        return siguiente
-        return None
-
-    def comparar_bono_en(csv_file, pdf_files, columnas):
-        df = pd.read_csv(csv_file)
-        if not all(col in df.columns for col in columnas):
-            st.error(f"⚠️ Your CSV must contain the following columns: {columnas}")
-            return
-
-        df[columnas[1:]] = df[columnas[1:]].applymap(limpiar_bono_en)
-        df[columnas[0]] = df[columnas[0]].astype(str).str.upper().str.strip()
-
-        errores_por_fila = {}
-        comentarios = {}
-        iconos_df = df.copy()
-        iconos_df["PDF SOURCE"] = ""
-        notas = []
-        procesados = []
-
-        for file in pdf_files:
-            reader = PdfReader(file)
-            texto = ''.join(page.extract_text() for page in reader.pages if page.extract_text())
-            if not texto.strip():
-                continue
-
-            nombre_pdf = extraer_nombre_bono_en(texto)
-            if not nombre_pdf:
-                continue
-
-            nombre_pdf = nombre_pdf.upper().strip()
-            if nombre_pdf not in df[columnas[0]].values:
-                continue
-
-            idx = df[df[columnas[0]] == nombre_pdf].index[0]
-            fila = df.loc[idx]
-            datos = extraer_datos_bono_en(texto)
-            if not datos:
-                continue
-
-            errores = []
-            for campo, extraido, esperado in zip(columnas[1:], datos, [fila[col] for col in columnas[1:]]):
-                if not comparar_valores_bono_en(extraido, esperado):
-                    errores.append(campo)
-                    comentarios[(idx, campo)] = f"{campo}: In CSV: {esperado}// In PDF: {extraido}"
-                    iconos_df.at[idx, campo] = f"❌ {fila[campo]}"
-                else:
-                    iconos_df.at[idx, campo] = f"✅ {fila[campo]}"
-
-            if errores:
-                errores_por_fila[idx] = errores
-            else:
-                for campo in columnas[1:]:
-                    iconos_df.at[idx, campo] = f"✅ {fila[campo]}"
-
-            iconos_df.at[idx, "PDF SOURCE"] = file.name
-            procesados.append(idx)
-
-        for idx in iconos_df.index:
-            fila_notas = [comentarios[(idx, col)] for col in iconos_df.columns if (idx, col) in comentarios]
-            notas.append(" | ".join(fila_notas))
-        iconos_df["NOTES"] = notas
-
-        def resaltar(row):
-            idx = row.name
-            return ['background-color: #FFCCCC' if col in errores_por_fila.get(idx, []) else ''
-                    for col in iconos_df.columns]
-
-        iconos_filtrados = iconos_df.loc[procesados] if procesados else pd.DataFrame()
-        st.subheader("📊 Comparison Results")
-
-        if not iconos_filtrados.empty:
-            st.dataframe(iconos_filtrados.style.apply(resaltar, axis=1), use_container_width=True)
-        else:
-            st.warning("⚠️ No valid matches found between PDFs and CSV names.")
-
-    columnas_bono_en = ['NAME', 'DEFERRED BONUS', 'FINANCIAL FACTOR', 'TARGET BONUS', 'ANNUAL SALARY']
-    csv_file_bono_en = st.file_uploader("📂 Upload your CSV file", type=["csv"], key="csv_bono_en")
-    pdf_files_bono_en = st.file_uploader("📥 Upload your PDF files", type=["pdf"], accept_multiple_files=True, key="pdf_bono_en")
-    if csv_file_bono_en and pdf_files_bono_en:
-        comparar_bono_en(csv_file_bono_en, pdf_files_bono_en, columnas_bono_en)
+                st.download_button(
+                    label="📥 Descargar archivo_final_con_estilo.xlsx",
+                    data=output,
+                    file_name="archivo_final.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+else:
+    st.info("👆 Sube ambos archivos para comenzar.")
