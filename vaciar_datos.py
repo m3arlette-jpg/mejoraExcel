@@ -9,6 +9,19 @@ from copy import copy
 st.set_page_config(page_title="Vaciado de datos", layout="wide")
 st.title("✨ Vaciado de datos en un archivo")
 
+# 🔐 Protección con contraseña
+def verificar_acceso():
+    st.sidebar.header("🔒 Acceso restringido")
+    password = st.sidebar.text_input("Ingresa la contraseña", type="password")
+    return password == "miclave123"  # Cambia esto por tu clave
+
+if not verificar_acceso():
+    st.warning("🔐 Esta aplicación está protegida. Ingresa la contraseña en la barra lateral.")
+    st.stop()
+
+
+
+
 # 📂 Función para cargar archivo base
 def cargar_base(uploaded_file):
     ext = uploaded_file.name.split(".")[-1].lower()
