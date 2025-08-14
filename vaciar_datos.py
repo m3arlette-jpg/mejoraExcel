@@ -8,18 +8,18 @@ from openpyxl.styles import PatternFill
 import tempfile
 
 # 🎨 Configuración inicial
-st.set_page_config(page_title="Comparadores Financieros 💲", layout="wide")
-st.title("💲 Comparadores Financieros PDF vs CSV")
+st.set_page_config(page_title="VALIDACIÓN DE CARTAS VEAB💲", layout="wide")
+st.title("💲VALIDACIÓN DE CARTAS VEAB PDF vs EXCEL")
 
 # 🗂️ Pestañas principales
 tab_acciones_es, tab_acciones_en, tab_bono_es, tab_bono_en = st.tabs([
-    "🇪🇸 Acciones Español", "🇺🇸 Stock Compare", "🇪🇸 Bono Diferido", "🇺🇸 Deferred Bonus"
+    "🇪🇸 Acciones", "🇺🇸 Virtual Shares", "🇪🇸 Bono Diferido", "🇺🇸 Deferred Bonus"
 ])
 
 # ─────────────────────────────────────────────────────────────
 # 🇪🇸 Comparador de Acciones Español
 with tab_acciones_es:
-    st.header("📂 Comparador de Acciones (Español)")
+    st.header("📂 Comparador de Acciones")
 
     def limpiar_es(valor):
         return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
@@ -129,7 +129,7 @@ with tab_acciones_es:
 # ─────────────────────────────────────────────────────────────
 # 🇺🇸 Comparador de Acciones Inglés
 with tab_acciones_en:
-    st.header("📂 Stock Comparator (English)")
+    st.header("📂 Virtual Shares")
 
     def limpiar_en(valor):
         return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
@@ -240,7 +240,7 @@ with tab_acciones_en:
 # ─────────────────────────────────────────────────────────────
 # 🇪🇸 Comparador Bono Diferido Español
 with tab_bono_es:
-    st.header("📂 Comparador Bono Diferido Español")
+    st.header("📂 Comparador Bono Diferido")
 
     def limpiar_bono_es(valor):
         return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
@@ -353,7 +353,7 @@ with tab_bono_es:
 # ─────────────────────────────────────────────────────────────
 # 🇺🇸 Comparador Bono Diferido Inglés
 with tab_bono_en:
-    st.header("📂 Deferred Bonus Comparator (English)")
+    st.header("📂 Deferred Bonus Comparator")
 
     def limpiar_bono_en(valor):
         return str(valor).replace(",", "").replace("\xa0", "").replace("\u200b", "").replace(" ", "").replace("%", "").strip()
